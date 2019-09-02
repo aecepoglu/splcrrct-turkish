@@ -1,45 +1,3 @@
-(* Unicode Letter *)
-module Letter (*: sig
-  type t
-  val of_chars : char list -> t
-  val to_bytes : t -> Bytes.t list
-  val list_to_string : t list -> string
-end *)= struct
-  type t = char list
-  let of_chars x = x
-  let to_bytes x = List.map (Bytes.make 1) x
-  let list_to_string xs = xs
-                     |> List.map to_bytes
-                     |> List.flatten
-                     |> Bytes.concat Bytes.empty
-                     |> Bytes.to_string
-end
-
-let letter_tr_i = Letter.of_chars ['\196'; '\177']
-let letter_tr_u = Letter.of_chars ['\195'; '\188']
-let letter_tr_o = Letter.of_chars ['\195'; '\182']
-let letter_tr_g = Letter.of_chars ['\196'; '\159']
-let letter_tr_s = Letter.of_chars ['\197'; '\159']
-let letter_tr_c = Letter.of_chars ['\195'; '\167']
-
-let enletter_of_trletter = function
-| l when l = letter_tr_i -> Letter.of_chars ['i']
-| l when l = letter_tr_u -> Letter.of_chars ['u']
-| l when l = letter_tr_o -> Letter.of_chars ['o']
-| l when l = letter_tr_g -> Letter.of_chars ['g']
-| l when l = letter_tr_s -> Letter.of_chars ['s']
-| l when l = letter_tr_c -> Letter.of_chars ['c']
-| l -> l
-
-type vowel_depth = BackVowel | FrontVowel
-type vowel_width = ThinVowel | WideVowel
-
-let thin_vowels = [letter_tr_i;
-                   Letter.of_chars ['i'];
-                   letter_tr_u;
-                   Letter.of_chars ['u'];
-                  ]
-
 let chars_of_string str = 
   let n = String.length str in
   let rec aux i acc =
@@ -49,42 +7,90 @@ let chars_of_string str =
   in
     aux 0 []
 
+(* Unicode Letter *)
+module ULetter : sig
+  type t
+  val of_chars : char list -> t
+  val to_string : t -> string
+  val list_to_string : t list -> string
+  val tr_of_en : t -> t
+  val en_of_tr : t -> t
+  val print : Format.formatter -> t -> unit
+end = struct
+  type t = string
+  let of_chars x = x
+                   |> List.map (Bytes.make 1)
+                   |> Bytes.concat Bytes.empty
+                   |> Bytes.to_string
+  let to_string x = x
+  
+  let list_to_string xs = xs
+                          |> List.map to_string
+                          |> String.concat ""
+  
+  let tr_of_en = function
+  | "i" -> "ı"
+  | "o" -> "ö"
+  | "u" -> "ü"
+  | "c" -> "ç"
+  | "g" -> "ğ"
+  | x -> x
+
+  let en_of_tr = function
+  | "i" -> "ı"
+  | "ö" -> "o"
+  | "ü" -> "u"
+  | "ç" -> "c"
+  | "ğ" -> "g"
+  | x -> x
+  
+  let print fmt x = Format.printf "'%s'" (to_string x)
+end
 
 (* Unicode Word *)
-module Uword (*: sig
-               type t
-               val of_string : string -> t
-               val to_string : t -> string
-               val rev : t -> t
-               val to_letters : t -> Letter.t list
-               val of_letters : Letter.t list -> t
-               end*) = struct
-  type t = Letter.t list
+module UWord : sig
+  type t
+  val of_string : string -> t
+  val to_string : t -> string
+  val to_letters : t -> ULetter.t list
+  val of_letters : ULetter.t list -> t
+  val print : Format.formatter -> t -> unit
+end = struct
+  type t = ULetter.t list
 
   let of_string str =
-    let rec aux2 i cur acc = function
+    let rec aux i cur acc = function
     | []                        -> List.rev acc
     | c :: c_tl when i > 0      -> (let cur' = c :: cur in
                                       if i = 1
-                                      then aux2 0 []
-                                             ((Letter.of_chars (List.rev cur')) :: acc)
+                                      then aux 0 []
+                                             ((ULetter.of_chars (List.rev cur')) :: acc)
                                              c_tl
-                                      else aux2 (i - 1) cur'
+                                      else aux (i - 1) cur'
                                              acc
                                              c_tl
                                    )
-    | c :: c_tl as cs when c < '\x80' -> aux2 1 [] acc cs
+    | c :: c_tl as cs when c < '\x80' -> aux 1 [] acc cs
     | c :: _          when c < '\xC0' -> invalid_arg "char point < xC0"
-    | c :: c_tl as cs when c < '\xE0' -> aux2 2 [] acc cs
-    | c :: c_tl as cs when c < '\xF0' -> aux2 3 [] acc cs
-    | c :: c_tl as cs when c < '\xF8' -> aux2 4 [] acc cs
-    | c :: c_tl as cs when c < '\xFC' -> aux2 5 [] acc cs
-    | c :: c_tl as cs when c < '\xFE' -> aux2 6 [] acc cs
+    | c :: c_tl as cs when c < '\xE0' -> aux 2 [] acc cs
+    | c :: c_tl as cs when c < '\xF0' -> aux 3 [] acc cs
+    | c :: c_tl as cs when c < '\xF8' -> aux 4 [] acc cs
+    | c :: c_tl as cs when c < '\xFC' -> aux 5 [] acc cs
+    | c :: c_tl as cs when c < '\xFE' -> aux 6 [] acc cs
     | _                         -> invalid_arg "char point >= xFE"
     in
-      aux2 0 [] [] (chars_of_string str)
+      aux 0 [] [] (chars_of_string str)
 
-  let to_string = Letter.list_to_string
+  let to_string = ULetter.list_to_string
+  
+  let print fmt ls =
+    Format.print_char '[';
+    List.iteri (fun i l ->
+                 Format.print_string (if i > 0 then "; " else "");
+                 ULetter.print fmt l
+               )
+      ls;
+    Format.print_char ']'
 
   let rev x = List.rev x
 
@@ -95,124 +101,219 @@ end
 module type WORD_DB = sig
   type t
   val of_strings : string list -> t
-  val find : t -> Letter.t list -> Letter.t list option
+  val contains : t -> ULetter.t list -> bool
 end
 
 module BasicWordDb : WORD_DB = struct
-  type t = (Letter.t list, Letter.t list) Hashtbl.t
+  type t = (ULetter.t list, bool) Hashtbl.t
 
   let of_strings ws =
     let tbl = Hashtbl.create (List.length ws) in
     let () = List.to_seq ws
-             |> Seq.map Uword.of_string
-             |> Seq.map Uword.to_letters
-             |> Seq.iter (fun ls -> Hashtbl.add tbl
-                                      (List.map enletter_of_trletter ls)
-                                      ls
-                         )
+             |> Seq.map UWord.of_string
+             |> Seq.map UWord.to_letters
+             |> Seq.iter (fun ls -> Hashtbl.add tbl ls true)
     in
       tbl
 
-  let find = Hashtbl.find_opt
+  let contains = Hashtbl.mem
 end
 
-type ek = Ek of Uword.t
-let letters_of_ek = function
-| Ek w -> Uword.to_letters w
+(* __^__                                               __^__
+  ( ___ )---------------------------------------------( ___ )
+   | / |  Vowels In Turkish                            | \ |
+   | / |                                               | \ |
+   | / |        Unrounded  Unrounded  Rounded  Rounded | \ |
+   | / |        Open       Close      Open     Close   | \ |
+   | / | Back   a          ı          o        u       | \ |
+   | / | Front  e          i          ö        ü       | \ |
+   |___|                                               |___|
+  (_____)---------------------------------------------(_____) *)
+
+type letter_constraint =
+| AfterConsonant
+
+type vowel_depth = Back | Front | AnyDepth
+type vowel_roundness = Rounded | Unrounded | AnyRoundness
+type vowel_openness = Open | Closed | AnyOpening
+
+type ruly_letter =
+| JustLetter of string
+| Vowel of vowel_depth * vowel_roundness * vowel_openness
+| Optional of letter_constraint * ruly_letter
 
 
-module type SUFFIXES = sig
-  type t
-  val from : ek list -> t
-  val find_all : t -> Letter.t list -> (ek list * Letter.t list) list
-end
+let build_suffixes () =
+  let x = [
+    [
+      JustLetter "l";
+      Vowel (AnyDepth, Unrounded, Open);
+      JustLetter "r"
+    ];
+    [
+      Optional (AfterConsonant, Vowel (AnyDepth, AnyRoundness, Closed));
+      JustLetter "m";
+      Vowel (AnyDepth, AnyRoundness, Closed);
+      JustLetter "z"
+    ]
+  ] in
+    x
 
-let withrmd_starts_with word prefix =
-  let rec aux acc = function
-  | a :: t_a, b :: t_b when a = b -> aux (a :: acc) (t_a, t_b)
-  | x, [] -> Some (List.rev acc, x)
-  | _, _ -> None
-  in
-    aux [] (word, prefix)
+let is_vowel = function
+|  "a" | "e" | "ı" | "i" | "o" | "ö" | "u" | "ü" -> true
+| _ -> false
 
-module SuffixList = struct
-  type t = (Letter.t list * ek) list
-  let from eks =
-    List.map (function
-             | Ek w as e -> List.rev (Uword.to_letters w), e
-             ) eks
-  let find_all t pattern =
-    let rec aux results all_results = function
-    | (eks, pat) :: pat_rest -> 
-      let results = List.filter_map (fun (letters, ek) ->
-                                      withrmd_starts_with pat letters
-                                      |> Option.map (fun (suf, rmd) -> ek :: eks, rmd)
-                                    ) t
-      in
-        aux results all_results pat_rest
-    | [] -> (match results with
-            | [] -> all_results
-            | l -> (aux [] (l @ all_results) l)
+let is_consonant x = not (is_vowel x)
+
+let filter_roundness = function
+| AnyRoundness -> (fun _ -> true)
+| Rounded -> (function
+             | "o" | "ö" | "u" | "ü" -> true
+             | _ -> false
+             )
+| Unrounded -> (function
+               |  "a" | "e" | "ı" | "i" -> true
+               | _ -> false
+               )
+
+let filter_depth = function
+| AnyDepth -> (fun _ -> true)
+| Back -> (function
+          | "a" | "ı" | "o" | "u" -> true
+          | _ -> true
+          )
+| Front -> (function
+           |"e" |"i" | "ö" | "ü" -> true
+           | _ -> true
+           )
+
+let filter_openness = function
+| AnyOpening -> (fun _ -> true)
+| Open -> (function
+          | "a" | "e" | "o" | "ö" -> true
+          | _ -> false
+          )
+| Closed -> (function
+            | "ı" | "i" | "u" | "ü" -> true
+            | _ -> false
             )
-    in
-      aux [] [] [[], List.rev pattern]
-end
 
-let suggest_words suffixes words (word:string) :string list =
-  let word' = word |> Uword.of_string |> Uword.to_letters in
-    SuffixList.find_all suffixes word'
-    |> (function
-       | [] -> [[], List.rev word']
-       | x -> x
-       )
-    |> List.map (fun (eks, w) -> List.rev w,
-                                 List.map letters_of_ek eks
+let get_vowels depth roundness openness =
+  ["a";"e";"ı";"i";"o";"ö";"u";"ü"]
+  |> List.filter (filter_depth depth)
+  |> List.filter (filter_roundness roundness)
+  |> List.filter (filter_openness openness)
+
+let make_letter_variations ls =
+  ls 
+  |> List.map (fun c ->
+                let c' = ULetter.tr_of_en c in
+                  if c = c'
+                  then [c]
+                  else [c; c']
+              )
+
+let gen_all_combos (ass:'a list list) :'a list list= 
+  let rec aux pre = function
+  | [hd] :: tl           -> aux (hd :: pre) tl
+  | (h_hd :: h_tl) :: tl -> aux pre ([h_hd] :: tl)
+                            @ aux pre (h_tl :: tl)
+  | [] :: tl             -> aux pre tl
+  | []                   -> [List.rev pre]
+  in
+    aux [] ass
+
+let debugstring_of_letters = 
+  let rec aux acc = function
+  | [] -> String.concat "" (List.rev acc)
+  | JustLetter s :: tl -> aux (s :: acc) tl
+  | Vowel (depth, roundness, openness) :: tl ->
+    aux
+      (("("
+        ^ (String.concat
+             "|"
+             (get_vowels depth roundness openness)
+          )
+        ^ ")"
+       ) :: acc) tl
+  | Optional (_constraint, v) :: tl -> aux (("?" ^ (aux [] [v])) :: acc) tl
+  in
+    aux []
+
+let string_of_letters ls =
+  let rec aux acc = function
+  | [] -> List.rev acc
+  | JustLetter s :: tl -> aux ([s] :: acc) tl
+  | Vowel (depth, roundness, openness) :: tl ->
+    aux 
+      ((get_vowels depth roundness openness) :: acc) tl
+  | Optional (_constraint, v) :: tl -> aux ((aux [] [v]) @ acc) tl
+  in
+    aux [] ls
+    |> gen_all_combos
+    |> List.map (String.concat "")
+
+let build_all_combos lss =
+  let rec aux pre sols = function
+  | [h_hd] :: tl -> 
+    let pre' = h_hd :: pre in
+      aux pre' ((pre', tl) :: sols) tl
+  | (h_hd :: h_tl) :: tl ->
+    let sols' = aux pre sols (h_tl :: tl) in
+      aux pre sols' ([h_hd] :: tl)
+  | [] :: tl -> sols
+  | [] -> sols
+  in
+    aux [] [] lss
+    |> List.map (fun (a, b) -> List.rev a, b)
+
+let suggest_words (words:BasicWordDb.t) (w:string) :string list =
+  let _suffixes = build_suffixes ()
+                  |> List.map string_of_letters
+                  |> List.flatten
+                  |> List.cons "" in
+  let letters =  w
+                 |> UWord.of_string
+                 |> UWord.to_letters in
+  let _letter_combos = make_letter_variations letters in
+    build_all_combos _letter_combos
+    |> List.filter (fun (fst, _) -> BasicWordDb.contains words fst)
+    |> List.map (fun (fst, snd) -> 
+                  let str = ULetter.list_to_string fst in
+                    snd
+                    |> gen_all_combos
+                    |> List.map ULetter.list_to_string
+                    |> List.filter (fun x -> List.mem x _suffixes)
+                    |> List.map (fun x -> str ^ x)
                 )
-    |> List.filter_map (fun (w, ss) -> match BasicWordDb.find words w with
-                       | Some w' -> Some (w', ss)
-                       | None -> None
-                       )
-    |> List.map (fun (w, ss) -> Letter.list_to_string w
-                                ^ "-"
-                                ^ (ss
-                                   |> List.map Letter.list_to_string
-                                   |> String.concat "-"
-                                  ))
-    |> (function
-       | results when not (List.mem word results) -> results @ [word]
-       | x -> x
-       )
+    |> List.flatten
+    |> List.sort String.compare
 
-let test expected received msg =
-  if expected = received
-  then ()
-  else print_endline msg
-
-let abc = thin_vowels, ["_m"; "_n"; "(yssn)_"; "(_)m_z"; "(_)n_z"]
-                       |> List.map chars_of_string
-
-let suffix_strs = ["lar";
-                   "dan"; "den";
-                   "(i)m"; "(i)n"; "(yssn)i"; "(i)miz"; "(i)niz"]
-let words_list = ["akıl"; "ev"; "bal"]
+let words_list = ["akıl"; "cin"; "çin"; "öküz"; "ev"; "oğul"]
 let words = BasicWordDb.of_strings words_list
-let suffixes' = suffix_strs
-                |> List.map Uword.of_string
-                |> List.map (fun x -> Ek x)
-                |> SuffixList.from
+let suggest = suggest_words words
 
 let () =
-  let suggest = suggest_words suffixes' words in
-  let test_suggest a b =
-    test (suggest a) b ("Failed " ^ a)
+  let test_suggest x y =
+    let y' = suggest x in
+      (if y <> y'
+       then (
+         Printf.printf
+           "For \"%s\"; Expected [%s], got [%s]"
+           x
+           (String.concat ";" y)
+           (String.concat ";" y')
+       )
+       else (
+         Printf.printf "\"%s\" OK" x
+       )
+      );
+      print_endline ""
   in
-    assert (withrmd_starts_with [1; 2; 3; 4] [1; 2] = Some ([1; 2], [3; 4]));
-    test_suggest "akildan"    ["akıl-dan"; "akildan"];
-    test_suggest "akillardan" ["akıl-lar-dan"; "akillardan"];
-    test_suggest "evden"      ["ev-den"; "evden"];
-    test_suggest "akil"       ["akıl-"; "akil"];
-    test_suggest "balim"      ["bal-ım"; "balim"];
-    (*test_suggest "evim"       ["ev-im"; "evim"];*)
-    (*test_suggest "okulum"     ["okul-um"; "okulum"];*)
-    (*test_suggest "okuzum"     ["okuz-um"; "okuzum"];*)
-    test_suggest "unknown"    ["unknown"];
+    test_suggest "cin" ["cin"; "çin"];
+    test_suggest "ogul" ["oğul"];
+    test_suggest "akillar" ["akıllar"];
+    test_suggest "evler"   ["evler"];
+    test_suggest "okuzler" ["öküzler"];
+    test_suggest "unknown" ["unknown"];
+
