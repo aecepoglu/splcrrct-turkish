@@ -15,6 +15,25 @@ let combine_safely l1 l2 =
   in
     aux [] (l1, l2)
 
+let find_opt_map f =
+   let rec aux = function
+   | h :: t -> (match f h with
+               | None -> aux t
+               | x -> x
+               )
+   | [] -> None
+   in
+    aux
+
+let matches_alternatives_with_rmd xs xss =
+  let rec aux = function
+  | h1 :: t1, h2 :: t2 when List.mem h1 h2 -> aux (t1, t2)
+  | [], rmd         -> Some rmd
+  | _, []           -> None
+  | _ :: _, _ :: _  -> None
+  in
+    aux (xs, xss)
+
 (* __^__                                               __^__
   ( ___ )---------------------------------------------( ___ )
    | / |  Vowels In Turkish                            | \ |
@@ -33,18 +52,15 @@ module ULetter : sig
   type vowel_depth = Back | Front | AnyDepth
   type vowel_roundness = Rounded | Unrounded | AnyRoundness
   type vowel_openness = Open | Closed | AnyOpening
-  type vowel_categories = vowel_depth * vowel_roundness * vowel_openness
-  type complex_t =
-      Consonant of t
-    | Vowel of t * vowel_categories
-  val categorize : t -> vowel_categories
+  type letter_type = Vowel | Consonant | AnyType
+  type category = letter_type * vowel_depth * vowel_roundness * vowel_openness
+  val categorize : t -> category
   val of_chars : char list -> t
   val of_string : string -> t
   val to_string : t -> string
   val list_to_string : t list -> string
   val tr_of_en : t -> t
   val en_of_tr : t -> t
-  val complexify : t -> complex_t
   val print : Format.formatter -> t -> unit
 end = struct
   type t = string
@@ -52,11 +68,8 @@ end = struct
   type vowel_depth = Back | Front | AnyDepth
   type vowel_roundness = Rounded | Unrounded | AnyRoundness
   type vowel_openness = Open | Closed | AnyOpening
-  type vowel_categories = vowel_depth * vowel_roundness * vowel_openness
-
-  type complex_t =
-      Consonant of t
-    | Vowel of t * vowel_categories
+  type letter_type = Vowel | Consonant | AnyType
+  type category = letter_type * vowel_depth * vowel_roundness * vowel_openness
 
   let of_chars x = String.of_seq (List.to_seq x)
   let to_string x = x
@@ -84,19 +97,15 @@ end = struct
   | x -> x
   
   let categorize = function
-  | "a" -> (Back , Unrounded, Open  )
-  | "e" -> (Front, Unrounded, Open  )
-  | "ı" -> (Back , Unrounded, Closed)
-  | "i" -> (Front, Unrounded, Closed)
-  | "o" -> (Back , Rounded  , Open  )
-  | "ö" -> (Front, Rounded  , Open  )
-  | "u" -> (Back , Rounded  , Closed)
-  | "ü" -> (Front, Rounded  , Closed)
-  | _ -> (AnyDepth, AnyRoundness, AnyOpening)
-  
-  let complexify c = match c with
-  | "a" | "e" | "ı" | "i" | "o" | "ö" | "u" | "ü" -> Vowel (c, categorize c)
-  | _ -> Consonant c
+  | "a" -> (Vowel, Back , Unrounded, Open  )
+  | "e" -> (Vowel, Front, Unrounded, Open  )
+  | "ı" -> (Vowel, Back , Unrounded, Closed)
+  | "i" -> (Vowel, Front, Unrounded, Closed)
+  | "o" -> (Vowel, Back , Rounded  , Open  )
+  | "ö" -> (Vowel, Front, Rounded  , Open  )
+  | "u" -> (Vowel, Back , Rounded  , Closed)
+  | "ü" -> (Vowel, Front, Rounded  , Closed)
+  | _   -> (Consonant, AnyDepth, AnyRoundness, AnyOpening)
   
   let print fmt x = Format.printf "'%s'" (to_string x)
 end
@@ -173,40 +182,12 @@ module BasicWordDb : WORD_DB = struct
   let contains = Hashtbl.mem
 end
 
-type letter_constraint =
-| AfterVowel
-
-type letter_def =
-| JustLetter of ULetter.t
-| SuchVowel of ULetter.vowel_categories
-| Optional of letter_constraint * ULetter.t
+type letter_def = ULetter.letter_type
+                  * ULetter.vowel_depth
+                  * ULetter.vowel_roundness
+                  * ULetter.t list
 
 let l = ULetter.of_string
-
-let filter_depth = function
-| ULetter.AnyDepth -> (fun _ -> true)
-| x -> (fun l -> match (ULetter.categorize l) with
-  | (x', _, _) -> x = x'
-  )
-
-let filter_roundness = function
-| ULetter.AnyRoundness -> (fun _ -> true)
-| x -> (fun l -> match (ULetter.categorize l) with
-       | (_, x', _) -> x = x'
-       )
-
-let filter_openness = function
-| ULetter.AnyOpening -> (fun _ -> true)
-| x -> (fun l -> match (ULetter.categorize l) with
-       | (_, _, x') -> x = x'
-       )
-
-let get_vowels depth roundness openness =
-  ["a";"e";"ı";"i";"o";"ö";"u";"ü"]
-  |> List.map ULetter.of_string
-  |> List.filter (filter_depth depth)
-  |> List.filter (filter_roundness roundness)
-  |> List.filter (filter_openness openness)
 
 let make_letter_variations ls =
   ls 
@@ -217,77 +198,88 @@ let make_letter_variations ls =
                   else [c; c']
               )
 
-let gen_all_combos (ass:'a list list) :'a list list= 
-  let rec aux pre = function
-  | [hd] :: tl           -> aux (hd :: pre) tl
-  | (h_hd :: h_tl) :: tl -> aux pre ([h_hd] :: tl)
-                            @ aux pre (h_tl :: tl)
-  | [] :: tl             -> aux pre tl
-  | []                   -> [List.rev pre]
-  in
-    aux [] ass
-
-let attempt ~depth0 ~after_vowel (lss:ULetter.t list list) (ldss:letter_def list list) =
-  let find (depth1, roundness, openness) depth2 ls =
-    ls
-    |> List.filter (filter_depth depth1)
-    |> List.filter (filter_depth depth2)
-    |> List.filter (filter_roundness roundness)
-    |> List.filter (filter_openness openness)
-    |> (function
-       | h :: _ -> Some h
-       | [] -> None
-       )
-  in
-  let rec build_next depth after_vowel acc = function
-  | [], ls_tl -> Some (acc, (ls_tl, depth, after_vowel))
-  | JustLetter l :: ld_tl, ls :: ls_tl -> (if List.mem l ls
-                                           then build_next depth false (l :: acc) (ld_tl, ls_tl)
-                                           else None
-                                          )
-  | SuchVowel (depth', _, _ as cats) :: ld_tl, ls :: ls_tl -> (match find cats depth ls with
-                                                              | Some l -> build_next depth' true (l :: acc) (ld_tl, ls_tl)
-                                                              | None -> None
-                                                              )
-  | Optional (AfterVowel, _) :: ld_tl, ls_tl     when not after_vowel -> build_next depth false acc        (ld_tl, ls_tl)
-  | Optional (AfterVowel, l) :: ld_tl, ls :: ls_tl when List.mem l ls -> build_next depth false (l :: acc) (ld_tl, ls_tl)
-  | Optional (AfterVowel, _) :: ld_tl, ls_tl                          -> None
-  | _ :: _, [] -> None
-  in
-  let rec build_all = function
-  | h :: t -> (match build_next depth0 after_vowel [] (h, lss) with
-              | Some (built, _rmd) -> Some (List.rev built)
-              | None -> build_all t
-              )
-  | [] -> None
-  in
-    build_all ldss
-
 let build_all_combos lss =
   let rec aux pre sols = function
   | [h_hd] :: tl -> 
-    let pre' = h_hd :: pre in
-      aux pre' ((pre', tl) :: sols) tl
+      let pre' = h_hd :: pre in
+        aux pre' ((pre', tl) :: sols) tl
   | (h_hd :: h_tl) :: tl ->
-    let sols' = aux pre sols (h_tl :: tl) in
-      aux pre sols' ([h_hd] :: tl)
+      let sols' = aux pre sols (h_tl :: tl) in
+        aux pre sols' ([h_hd] :: tl)
   | [] :: tl -> sols
   | [] -> sols
   in
     aux [] [] lss
     |> List.map (fun (a, b) -> List.rev a, b)
 
-let suggest_words (words:BasicWordDb.t) suffixes (w:string) :string list =
-  let find_last_vowel ls =
-    let rec aux = function
-    | h :: t -> (match ULetter.complexify h with
-                | Vowel (_, x) -> Some x
-                | _ -> aux t
-                )
-    | [] -> None
-    in
-      aux (List.rev ls)
+let depth_matches a b = (match (a, b) with
+                        | ULetter.AnyDepth, _
+                        | _, ULetter.AnyDepth -> true
+                        | x, y                -> x = y
+                        )
+
+let roundness_matches a b = (match (a, b) with
+                            | ULetter.AnyRoundness, _
+                            | _, ULetter.AnyRoundness -> true
+                            | x, y                    -> x = y
+                            )
+let letter_type_matches a b = (match (a, b) with
+                              | ULetter.AnyType, _
+                              | _, ULetter.AnyType -> true
+                              | x, y               -> x = y
+                              )
+
+let attempt
+      (word:ULetter.t list)
+      (goal:ULetter.t list list)
+      (all_defs:letter_def list)
+  : ULetter.t list option
+  =
+  let get_last_type l = List.nth_opt (List.rev l) 0
+                        |> Option.map ULetter.categorize
+                        |> Option.fold
+                             ~some: (function (a,_,_,_) -> a)
+                             ~none: ULetter.Consonant in
+  let last_type = get_last_type word in
+  let (d_last, r_last) = (List.rev word)
+                         |> find_opt_map
+                              (fun l ->
+                                 match ULetter.categorize l with
+                                 | (Vowel, d, r, _) -> Some (d, r)
+                                 | _ -> None
+                              )
+                         |> Option.value ~default:(ULetter.AnyDepth,
+                                                   ULetter.AnyRoundness)
   in
+  let chk_depth = depth_matches d_last in
+  let chk_roundness = roundness_matches r_last in
+  (** not tail-recursive *)
+  let rec aux t_last acc rmd defs =
+    (match rmd with
+    | Some []      -> Some acc
+    | Some rmd_lss -> 
+        (match defs with
+        | (t, d, r, ls) :: def_tl when letter_type_matches t_last t
+                                    && chk_depth d
+                                    && chk_roundness r ->
+            (match aux
+                     (get_last_type ls)
+                     (acc @ ls)
+                     (matches_alternatives_with_rmd ls rmd_lss)
+                     all_defs
+            with
+            | None -> aux t_last acc rmd def_tl
+            | x    -> x
+            )
+        | _ :: def_tl -> aux t_last acc rmd def_tl
+        | []          -> None
+        )
+    | None -> None
+    )
+in
+    aux last_type [] (Some goal) all_defs
+
+let suggest_words (words:BasicWordDb.t) suffixes (w:string) :string list =
   let letters =  w
                  |> UWord.of_string
                  |> UWord.to_letters in
@@ -295,29 +287,16 @@ let suggest_words (words:BasicWordDb.t) suffixes (w:string) :string list =
     build_all_combos _letter_combos
     |> List.filter (fun (fst, _) -> BasicWordDb.contains words fst)
     |> List.filter_map (fun (fst, snd) -> 
-                  let _ends_in_consonant = fst
-                                          |> List.rev
-                                          |> (fun l -> List.nth l 0)
-                                          |> ULetter.complexify
-                                          |> (function
-                                             | ULetter.Consonant _ -> true
-                                             | _ -> false
-                                             ) in
-                  let (last_depth, _, _) = find_last_vowel fst
-                                              |> (function
-                                                 | Some x -> x
-                                                 | None -> (AnyDepth, AnyRoundness, AnyOpening)
-                                                 )
-                                                in
                   let str = ULetter.list_to_string fst in
-                    attempt ~depth0:last_depth ~after_vowel:(not _ends_in_consonant) snd suffixes
+                    attempt fst snd suffixes
                     |> Option.map (fun x -> str ^ (ULetter.list_to_string x))
                 )
     |> List.sort String.compare
-    |> (function
-       | [] -> [w]
-       | l  -> l
-       )
+
+let suggest_words_or_fallback words suffixes w =
+  match suggest_words words suffixes w with
+  | [] -> [w]
+  | l -> l
 
 let words_list = [
   "bal";
@@ -329,45 +308,47 @@ let words_list = [
   "eşik";
 ]
 let words = BasicWordDb.of_strings words_list
-let suffixes =  [
-  [
-    JustLetter (l "l");
-    SuchVowel (AnyDepth, Unrounded, Open);
-    JustLetter (l "r")
-  ];
-  [
-    Optional (AfterVowel, (l "y"));
-    SuchVowel (AnyDepth, Unrounded, Open);
-  ];
-  [
-    Optional (AfterVowel, (l "y"));
-    SuchVowel (AnyDepth, AnyRoundness, Closed);
-  ];
-  [
-    JustLetter (l "d");
-    SuchVowel (AnyDepth, Unrounded, Open);
-  ];
-  [
-    JustLetter (l "t");
-    SuchVowel (AnyDepth, Unrounded, Open);
-  ];
-  [
-    JustLetter (l "d");
-    SuchVowel (AnyDepth, Unrounded, Open);
-    JustLetter (l "n");
-  ];
-  [
-    JustLetter (l "t");
-    SuchVowel (AnyDepth, Unrounded, Open);
-    JustLetter (l "n");
-  ];
-  (*[
-    Optional (AfterConsonant, SuchVowel (AnyDepth, AnyRoundness, Closed));
-    JustLetter (l "m");
-    SuchVowel (AnyDepth, AnyRoundness, Closed);
-    JustLetter (l "z")
-    ]*)
-]
+let suffixes =
+  let open ULetter in
+    [
+      AnyType,   Back,      AnyRoundness, "lar";
+      AnyType,   Front,     AnyRoundness, "ler";
+      Consonant, Back,      AnyRoundness, "a";
+      Consonant, Front,     AnyRoundness, "e";
+      Vowel,     Back,      AnyRoundness, "ya";
+      Vowel,     Front,     AnyRoundness, "ye";
+      Consonant, Back,      Unrounded,    "ı";
+      Consonant, Front,     Unrounded,    "i";
+      Consonant, Back,      Rounded,      "u";
+      Consonant, Front,     Rounded,      "ü";
+      Vowel,     Back,      Unrounded,    "yı";
+      Vowel,     Front,     Unrounded,    "yi";
+      Vowel,     Back,      Rounded,      "yu";
+      Vowel,     Front,     Rounded,      "yü";
+      AnyType,   Back,      AnyRoundness, "da";
+      AnyType,   Front,     AnyRoundness, "de";
+      AnyType,   Back,      AnyRoundness, "dan";
+      AnyType,   Front,     AnyRoundness, "den";
+      AnyType,   Back,      AnyRoundness, "ta";
+      AnyType,   Front,     AnyRoundness, "te";
+      AnyType,   Back,      AnyRoundness, "tan";
+      AnyType,   Front,     AnyRoundness, "ten";
+      Vowel,     AnyDepth,  AnyRoundness, "m";
+      Vowel,     AnyDepth,  AnyRoundness, "n";
+      Vowel,     Back,      Unrounded,    "sı";
+      Vowel,     Front,     Unrounded,    "si";
+      Vowel,     Back,      Rounded,      "su";
+      Vowel,     Front,     Rounded,      "sü";
+    ]
+    |> List.map (fun (a, b, c, str) ->
+                  let ls = str
+                           |> UWord.of_string
+                           |> UWord.to_letters
+                  in
+                    a, b, c, ls
+                )
+
+
 let suggest = suggest_words words suffixes
 
 let () =
@@ -392,18 +373,31 @@ let () =
       "ogul",       ["oğul"];
       "ogullar",    ["oğullar"];
       "okuzler",    ["öküzler"];
+      "ogula",      ["oğula"];
+      "okuze",      ["öküze"];
+      "kediye",     ["kediye"];
       "bali",       ["balı"];
       "cini",       ["cini"; "çini"];
       "ogulu",      ["oğulu"];
       "okuzu",      ["öküzü"];
-      "ogula",      ["oğula"];
-      "okuze",      ["öküze"];
-      "kediye",     ["kediye"];
-      "kediyi",     ["kediyi"];
       "balda",      ["balda"];
       "kedide",     ["kedide"];
-      "esikte",     ["eşikte"];
+      "balda",      ["balda"];
+      "kedide",     ["kedide"];
+      "oguldan",    ["oğuldan"];
+      "kediden",    ["kediden"];
+      "ogullardan", ["oğullardan"];
       "esikten",    ["eşikten"];
-      "unknown",    ["unknown"];
+      "balim",      ["balım"];
+      "cinim",      ["cinim"; "çinim"];
+      "ogulum",     ["oğulum"];
+      "okuzum",     ["öküzüm"];
+      "balin",      ["balın"];
+      "cinin",      ["cinin"; "çinin"];
+      "ogulun",     ["oğulun"];
+      "okuzun",     ["öküzün"];
+      "oguldann",   [];
+      "ogldan",     [];
+      "fallback",   [];
     ]    
     |> List.iter (fun (a, b) -> test_suggest a b);
